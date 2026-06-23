@@ -3,6 +3,8 @@ import SwiftTerm
 
 class ClickThroughTerminalView: LocalProcessTerminalView {
     var sessionId: UUID?
+    /// Set before Claude reaches waitingForInput; sent once and cleared automatically.
+    var pendingCommand: String?
     private var keyMonitor: Any?
     private var statusDebounceWork: DispatchWorkItem?
     private static let statusQueue = DispatchQueue(label: "com.notchy.status", qos: .utility)
@@ -152,6 +154,34 @@ class ClickThroughTerminalView: LocalProcessTerminalView {
                 SessionStore.shared.updateTerminalStatus(id, status: newStatus)
             }
         }
+
+        if let count = Self.extractTokenCount(from: fullText) {
+            DispatchQueue.main.async {
+                SessionStore.shared.updateTokenCount(id, count: count)
+            }
+        }
+
+        // Parse /usage output when we were expecting it
+        if newStatus == .waitingForInput {
+            DispatchQueue.main.async {
+                if TerminalManager.shared.awaitingUsageOutput.contains(id),
+                   let count = Self.extractUsageTokenCount(from: fullText) {
+                    TerminalManager.shared.awaitingUsageOutput.remove(id)
+                    SessionStore.shared.updateTokenCount(id, count: count)
+                    // Continue with task queue after usage is captured
+                    SessionStore.shared.fireTaskQueueIfReady(for: id)
+                }
+            }
+        }
+
+        // Send pending command (e.g. /remote-control) once Claude is ready for input
+        if newStatus == .waitingForInput {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let cmd = self.pendingCommand else { return }
+                self.pendingCommand = nil
+                self.send(txt: cmd + "\r")
+            }
+        }
     }
 
     /// Checks whether the text contains a Claude spinner character (visible during working state)
@@ -179,6 +209,37 @@ class ClickThroughTerminalView: LocalProcessTerminalView {
                 trimmed.dropFirst().first == " " &&
                 trimmed.dropFirst(2).first?.isNumber == true
         }
+    }
+
+    /// Parses Claude's /usage output: "X / Y tokens" → returns X (tokens used).
+    static func extractUsageTokenCount(from text: String) -> Int? {
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        for line in lines {
+            let s = String(line)
+            // Match "123,456 / 200,000" or similar ratio patterns
+            guard let range = s.range(of: #"([\d,]+)\s*/\s*([\d,]+)"#, options: .regularExpression) else { continue }
+            let match = String(s[range])
+            let parts = match.components(separatedBy: "/")
+            guard parts.count == 2 else { continue }
+            let used = parts[0].replacingOccurrences(of: ",", with: "").trimmingCharacters(in: .whitespaces)
+            if let n = Int(used), n > 0 { return n }
+        }
+        return nil
+    }
+
+    static func extractTokenCount(from text: String) -> Int? {
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        for line in lines {
+            let s = String(line)
+            guard let first = s.first, spinnerCharacters.contains(first), s.contains("…") else { continue }
+            if let range = s.range(of: #"[\d,]+\s*tokens?"#, options: .regularExpression) {
+                let match = String(s[range])
+                let digits = match.components(separatedBy: CharacterSet.letters.union(.whitespaces)).first ?? ""
+                let cleaned = digits.replacingOccurrences(of: ",", with: "").trimmingCharacters(in: .whitespaces)
+                if let n = Int(cleaned), n > 0 { return n }
+            }
+        }
+        return nil
     }
 
     private static func hasTokenCounterLine(_ text: String) -> Bool {
@@ -220,11 +281,12 @@ class TerminalManager: NSObject, LocalProcessTerminalViewDelegate {
             execName: "-" + (shell as NSString).lastPathComponent
         )
 
-        // cd to working directory, launch claude only if CLAUDE.md exists and integration is enabled
+        // cd to working directory, launch claude if integration is enabled
         let escapedDir = shellEscape(workingDirectory)
-        let hasClaude = launchClaude && SettingsManager.shared.claudeIntegrationEnabled && FileManager.default.fileExists(atPath: (workingDirectory as NSString).appendingPathComponent("CLAUDE.md"))
+        let hasClaude = launchClaude && SettingsManager.shared.claudeIntegrationEnabled
         if hasClaude {
-            terminal.send(txt: "cd \(escapedDir) && clear && claude\r")
+            terminal.send(txt: "cd \(escapedDir) && clear && claude --enable-auto-mode\r")
+            terminal.pendingCommand = "/remote-control"
         } else {
             terminal.send(txt: "cd \(escapedDir) && clear\r")
         }
@@ -249,6 +311,24 @@ class TerminalManager: NSObject, LocalProcessTerminalViewDelegate {
     }
 
     func processTerminated(source: TerminalView, exitCode: Int32?) {}
+
+    private static let internalCommands: Set<String> = ["/usage", "/compact", "/remote-control"]
+    var awaitingUsageOutput: Set<UUID> = []
+
+    func send(_ text: String, to sessionId: UUID) {
+        guard let terminal = terminals[sessionId] else { return }
+        terminal.send(txt: text + "\r")
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        if !Self.internalCommands.contains(trimmed) {
+            SessionStore.shared.recordPromptSent(for: sessionId)
+        }
+    }
+
+    func sendUsageQuery(to sessionId: UUID) {
+        guard let terminal = terminals[sessionId] else { return }
+        awaitingUsageOutput.insert(sessionId)
+        terminal.send(txt: "/usage\r")
+    }
 
     /// Returns the visible text from a terminal's buffer
     func visibleText(for sessionId: UUID) -> String? {

@@ -111,7 +111,27 @@ struct PanelContentView: View {
                 .padding(.trailing, -10)
             }
             .padding(.horizontal, 12)
-            .background(Color(nsColor: NSColor(white: 0.14, alpha: 1.0)).opacity(chromeBackgroundOpacity))
+            .background {
+                if #available(macOS 26.0, *) {
+                    Rectangle()
+                        .glassEffect(in: Rectangle())
+                        .opacity(chromeBackgroundOpacity)
+                } else {
+                    Color(nsColor: NSColor(white: 0.14, alpha: 1.0)).opacity(chromeBackgroundOpacity)
+                }
+            }
+
+            // Context token bar
+            if let tokenCount = sessionStore.activeSession?.tokenCount {
+                let pct = min(1.0, Double(tokenCount) / 200_000.0)
+                GeometryReader { geo in
+                    Rectangle()
+                        .fill(pct > 0.8 ? Color.red : pct > 0.6 ? Color.orange : Color.green)
+                        .frame(width: geo.size.width * pct, height: 3)
+                        .animation(.easeInOut(duration: 0.4), value: pct)
+                }
+                .frame(height: 3)
+            }
 
             if sessionStore.isTerminalExpanded, sessionStore.checkpointStatus != nil || sessionStore.lastCheckpoint != nil {
                 HStack(spacing: 6) {
@@ -177,7 +197,45 @@ struct PanelContentView: View {
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
-                .background(Color(nsColor: NSColor(white: 0.18, alpha: 1.0)).opacity(chromeBackgroundOpacity))
+                .background {
+                    if #available(macOS 26.0, *) {
+                        Rectangle()
+                            .glassEffect(in: Rectangle())
+                            .opacity(chromeBackgroundOpacity)
+                    } else {
+                        Color(nsColor: NSColor(white: 0.18, alpha: 1.0)).opacity(chromeBackgroundOpacity)
+                    }
+                }
+                .foregroundColor(.white.opacity(0.8))
+            }
+
+            // Task queue indicator
+            if let sessionId = sessionStore.activeSessionId,
+               sessionStore.pendingTaskCount(for: sessionId) > 0 {
+                HStack(spacing: 6) {
+                    Image(systemName: "list.number")
+                        .font(.system(size: 10, weight: .semibold))
+                    Text("\(sessionStore.pendingTaskCount(for: sessionId)) task\(sessionStore.pendingTaskCount(for: sessionId) == 1 ? "" : "s") queued")
+                        .font(.system(size: 11, weight: .medium))
+                    Spacer()
+                    Button("Clear") {
+                        sessionStore.clearQueue(for: sessionId)
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(.white.opacity(0.5))
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 5)
+                .background {
+                    if #available(macOS 26.0, *) {
+                        Rectangle()
+                            .glassEffect(in: Rectangle())
+                            .opacity(chromeBackgroundOpacity)
+                    } else {
+                        Color(nsColor: NSColor(white: 0.18, alpha: 1.0)).opacity(chromeBackgroundOpacity)
+                    }
+                }
                 .foregroundColor(.white.opacity(0.8))
             }
 
@@ -225,7 +283,15 @@ struct PanelContentView: View {
             }
         }
         .clipShape(UnevenRoundedRectangle(topLeadingRadius: 8.5, bottomLeadingRadius: 0, bottomTrailingRadius: 0, topTrailingRadius: 8.5))
-        .background(Color(nsColor: NSColor(white: 0.1, alpha: 1.0)).opacity(chromeBackgroundOpacity))
+        .background {
+            if #available(macOS 26.0, *) {
+                UnevenRoundedRectangle(topLeadingRadius: 8.5, bottomLeadingRadius: 0, bottomTrailingRadius: 0, topTrailingRadius: 8.5)
+                    .glassEffect(in: UnevenRoundedRectangle(topLeadingRadius: 8.5, bottomLeadingRadius: 0, bottomTrailingRadius: 0, topTrailingRadius: 8.5))
+                    .opacity(chromeBackgroundOpacity)
+            } else {
+                Color(nsColor: NSColor(white: 0.1, alpha: 1.0)).opacity(chromeBackgroundOpacity)
+            }
+        }
         .clipShape(UnevenRoundedRectangle(topLeadingRadius: 8.5, bottomLeadingRadius: 0, bottomTrailingRadius: 0, topTrailingRadius: 8.5))
         .onAppear {
             sessionStore.refreshLastCheckpoint()

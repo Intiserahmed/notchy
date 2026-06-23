@@ -26,6 +26,7 @@ struct TerminalSession: Identifiable {
     let createdAt: Date
     /// When the session most recently entered the .working state
     var workingStartedAt: Date?
+    var tokenCount: Int?
 
     init(projectName: String, projectPath: String? = nil, workingDirectory: String? = nil, started: Bool = false) {
         self.id = UUID()

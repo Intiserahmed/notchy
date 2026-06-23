@@ -17,6 +17,10 @@ class NotchWindow: NSPanel {
     /// When the panel is visible, the notch stays in hover-grown size.
     var isPanelVisible: (() -> Bool)?
 
+    /// The screen this pill is anchored to. Defaults to built-in (notch screen);
+    /// set to an external screen to show a virtual pill at the top of that display.
+    var targetScreen: NSScreen
+
     /// Detected notch dimensions (updated on screen change).
     private var notchWidth: CGFloat = 180
     private var notchHeight: CGFloat = 37
@@ -36,7 +40,8 @@ class NotchWindow: NSPanel {
     /// SwiftUI content overlay shown inside the pill when expanded
     private var pillContentHost: NSHostingView<NotchPillContent>?
 
-    init(onHover: @escaping () -> Void) {
+    init(onHover: @escaping () -> Void, screen: NSScreen? = nil) {
+        self.targetScreen = screen ?? NSScreen.builtIn ?? NSScreen.main ?? NSScreen.screens[0]
         self.onHover = onHover
 
         super.init(
@@ -174,8 +179,7 @@ class NotchWindow: NSPanel {
 
     private func expandWithBounce() {
         isExpanded = true
-        guard let screen = NSScreen.builtIn else { return }
-        let screenFrame = screen.frame
+        let screenFrame = targetScreen.frame
 
         let targetWidth: CGFloat = notchWidth + 80
         var targetFrame = NSRect(
@@ -228,8 +232,7 @@ class NotchWindow: NSPanel {
             self.pillContentHost?.animator().alphaValue = 0
         }
 
-        guard let screen = NSScreen.builtIn else { return }
-        let screenFrame = screen.frame
+        let screenFrame = targetScreen.frame
 
         var targetFrame = NSRect(
             x: screenFrame.midX - notchWidth / 2,
@@ -281,7 +284,7 @@ class NotchWindow: NSPanel {
     // MARK: - Notch size detection
 
     private func detectNotchSize() {
-        guard let screen = NSScreen.builtIn else { return }
+        let screen = targetScreen
 
         if #available(macOS 12.0, *),
            let left = screen.auxiliaryTopLeftArea,
@@ -300,8 +303,7 @@ class NotchWindow: NSPanel {
     // MARK: - Positioning
 
     private func positionAtNotch() {
-        guard let screen = NSScreen.builtIn else { return }
-        let screenFrame = screen.frame
+        let screenFrame = targetScreen.frame
         let x = screenFrame.midX - notchWidth / 2
         let y = screenFrame.maxY - notchHeight
         setFrame(NSRect(x: x, y: y, width: notchWidth, height: notchHeight), display: true)
@@ -325,8 +327,7 @@ class NotchWindow: NSPanel {
         let mouseLocation = NSEvent.mouseLocation
 
         // Check the notch area itself
-        guard let screen = NSScreen.builtIn else { return }
-        let screenFrame = screen.frame
+        let screenFrame = targetScreen.frame
         let effectiveWidth = isExpanded ? notchWidth + 80 : notchWidth
         let notchRect = NSRect(
             x: screenFrame.midX - effectiveWidth / 2,
@@ -407,8 +408,7 @@ class NotchWindow: NSPanel {
         pillView.isHovered = false
         pillView.earProtrusion = 0
         pillContentHost?.rootView = NotchPillContent(isHovering: false)
-        guard let screen = NSScreen.builtIn else { return }
-        let screenFrame = screen.frame
+        let screenFrame = targetScreen.frame
         let baseWidth = isExpanded ? notchWidth + 80 : notchWidth
         let targetFrame = NSRect(
             x: screenFrame.midX - baseWidth / 2,
@@ -420,6 +420,13 @@ class NotchWindow: NSPanel {
     }
 
     // MARK: - Observers
+
+    /// Update the target screen and reposition (call when preferred display changes).
+    func updateTargetScreen(_ screen: NSScreen) {
+        targetScreen = screen
+        detectNotchSize()
+        positionAtNotch()
+    }
 
     private func observeScreenChanges() {
         screenObserver = NotificationCenter.default.addObserver(
@@ -601,6 +608,13 @@ struct NotchPillContent: View {
 
                     Spacer()
 
+                    let sessions = SessionStore.shared.sessions
+                    if sessions.count > 1 {
+                        SessionDotsView()
+                            .padding(.trailing, 4)
+                            .transition(.opacity)
+                    }
+
                     switch displayState {
                     case .taskCompleted:
                         Image(systemName: "checkmark")
@@ -634,6 +648,30 @@ struct NotchPillContent: View {
         .offset(y: isHovering ? -3 : -2)
         .onChange(of: displayState) {
             NotificationCenter.default.post(name: .NotchyNotchStatusChanged, object: nil)
+        }
+    }
+}
+
+struct SessionDotsView: View {
+    private var sessions: [TerminalSession] { SessionStore.shared.sessions }
+
+    var body: some View {
+        HStack(spacing: 3) {
+            ForEach(sessions) { session in
+                Circle()
+                    .fill(dotColor(for: session.terminalStatus))
+                    .frame(width: 5, height: 5)
+            }
+        }
+    }
+
+    private func dotColor(for status: TerminalStatus) -> Color {
+        switch status {
+        case .idle:            return Color.white.opacity(0.25)
+        case .working:         return Color.white
+        case .waitingForInput: return Color.yellow
+        case .taskCompleted:   return Color.green
+        case .interrupted:     return Color.orange
         }
     }
 }

@@ -4,6 +4,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var panel: TerminalPanel!
     private var notchWindow: NotchWindow?
+    /// A secondary pill shown at the top of the external display when preferredDisplay == "external"
+    private var externalPillWindow: NotchWindow?
     private let sessionStore = SessionStore.shared
     private let settings = SettingsManager.shared
     private var hoverHideTimer: Timer?
@@ -22,8 +24,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             setupNotchWindow()
         }
         setupHotkey()
+        autoStartRestoredSessions()
         // Detect in background so launch isn't blocked
         sessionStore.detectAllXcodeProjectsAsync()
+    }
+
+    private func autoStartRestoredSessions() {
+        for session in sessionStore.sessions {
+            _ = TerminalManager.shared.terminal(
+                for: session.id,
+                workingDirectory: session.workingDirectory,
+                launchClaude: session.projectPath != nil
+            )
+        }
     }
 
     private func setupStatusItem() {
@@ -75,6 +88,29 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         notchWindow?.isPanelVisible = { [weak self] in
             self?.panel.isVisible ?? false
         }
+        updateExternalPillWindow()
+    }
+
+    /// Creates or destroys the external display pill based on current preferredDisplay setting.
+    func updateExternalPillWindow() {
+        guard settings.showNotch else {
+            externalPillWindow?.orderOut(nil)
+            externalPillWindow = nil
+            return
+        }
+        if settings.preferredDisplay == "external",
+           let external = NSScreen.screens.first(where: { $0 != NSScreen.builtIn }) {
+            if externalPillWindow == nil {
+                let pill = NotchWindow(onHover: { [weak self] in self?.notchHovered() }, screen: external)
+                pill.isPanelVisible = { [weak self] in self?.panel.isVisible ?? false }
+                externalPillWindow = pill
+            } else {
+                externalPillWindow?.updateTargetScreen(external)
+            }
+        } else {
+            externalPillWindow?.orderOut(nil)
+            externalPillWindow = nil
+        }
     }
 
     private func setupHotkey() {
@@ -95,9 +131,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         sessionStore.detectAndSwitchAsync()
     }
 
+    private var targetScreen: NSScreen {
+        if settings.preferredDisplay == "external",
+           let external = NSScreen.screens.first(where: { $0 != NSScreen.builtIn }) {
+            return external
+        }
+        return NSScreen.builtIn ?? NSScreen.main ?? NSScreen.screens[0]
+    }
+
     private func showPanelBelowNotch() {
-        guard let screen = NSScreen.builtIn else { return }
-        panel.showPanelCentered(on: screen)
+        panel.showPanelCentered(on: targetScreen)
     }
 
     // MARK: - Hover-to-hide tracking
@@ -263,6 +306,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 self.notchWindow?.orderOut(nil)
                 self.notchWindow = nil
             }
+            self.updateExternalPillWindow()
         }
     }
 
@@ -272,8 +316,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showPanelBelowStatusItem() {
-        if let button = statusItem.button,
-           let window = button.window {
+        let screen = targetScreen
+        if screen != NSScreen.builtIn {
+            panel.showPanelCentered(on: screen)
+        } else if let button = statusItem.button,
+                  let window = button.window {
             let buttonRect = button.convert(button.bounds, to: nil)
             let screenRect = window.convertToScreen(buttonRect)
             panel.showPanel(below: screenRect)

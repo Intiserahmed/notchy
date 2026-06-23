@@ -62,6 +62,14 @@ class SessionStore {
     /// Currently open Xcode project names (refreshed on each scan)
     var activeXcodeProjects: Set<String> = []
 
+    /// Per-session queue of prompts waiting to fire when Claude is next idle
+    var taskQueues: [UUID: [String]] = [:]
+
+    /// Number of prompts sent per session (used to trigger /usage every 5)
+    private var promptCounts: [UUID: Int] = [:]
+    /// Sessions that should send /usage on the next waitingForInput transition
+    private var pendingUsageQuery: Set<UUID> = []
+
     /// The status color for the notch (matches tab bar colors)
     var notchStatusColor: NSColor {
         guard let session = activeSession else { return .systemGreen }
@@ -110,6 +118,50 @@ class SessionStore {
             UserDefaults.standard.set(activeId.uuidString, forKey: Self.activeSessionKey)
         } else {
             UserDefaults.standard.removeObject(forKey: Self.activeSessionKey)
+        }
+    }
+
+    func recordPromptSent(for id: UUID) {
+        promptCounts[id, default: 0] += 1
+        if promptCounts[id, default: 0] % 5 == 0 {
+            pendingUsageQuery.insert(id)
+        }
+    }
+
+    func updateTokenCount(_ id: UUID, count: Int) {
+        guard let index = sessions.firstIndex(where: { $0.id == id }) else { return }
+        sessions[index].tokenCount = count
+    }
+
+    func enqueueTask(_ text: String, for sessionId: UUID) {
+        taskQueues[sessionId, default: []].append(text)
+    }
+
+    func clearQueue(for sessionId: UUID) {
+        taskQueues[sessionId] = []
+    }
+
+    func pendingTaskCount(for sessionId: UUID) -> Int {
+        taskQueues[sessionId]?.count ?? 0
+    }
+
+    func fireTaskQueueIfReady(for id: UUID) {
+        fireNextTaskOrCompact(for: id)
+    }
+
+    private func fireNextTaskOrCompact(for id: UUID) {
+        guard let session = sessions.first(where: { $0.id == id }) else { return }
+        // Auto-compact when token count exceeds 80% of 200k context
+        if SettingsManager.shared.autoCompactEnabled,
+           let count = session.tokenCount, count >= 160_000 {
+            TerminalManager.shared.send("/compact", to: id)
+            return
+        }
+        // Fire next queued task
+        if var queue = taskQueues[id], !queue.isEmpty {
+            let task = queue.removeFirst()
+            taskQueues[id] = queue
+            TerminalManager.shared.send(task, to: id)
         }
     }
 
@@ -271,6 +323,11 @@ class SessionStore {
                 if isPinned && !isTerminalExpanded && id == activeSessionId {
                     isTerminalExpanded = true
                     NotificationCenter.default.post(name: .NotchyExpandPanel, object: nil)
+                }
+                if pendingUsageQuery.remove(id) != nil {
+                    TerminalManager.shared.sendUsageQuery(to: id)
+                } else {
+                    fireNextTaskOrCompact(for: id)
                 }
             }
             else if status == .taskCompleted && previous != .taskCompleted {

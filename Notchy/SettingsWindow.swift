@@ -33,7 +33,7 @@ struct SettingsContentView: View {
                 .tabItem { Label(SettingsTab.integrations.rawValue, systemImage: SettingsTab.integrations.icon) }
                 .tag(SettingsTab.integrations)
         }
-        .frame(width: 450, height: 240)
+        .frame(width: 450, height: 280)
     }
 }
 
@@ -48,6 +48,18 @@ struct GeneralTab: View {
                     onShowNotchChanged?(newValue)
                 }
             Toggle("Enable sounds", isOn: $settings.soundsEnabled)
+
+            Picker("Panel display", selection: $settings.preferredDisplay) {
+                Text("Built-in").tag("builtin")
+                Text("External (if connected)").tag("external")
+            }
+
+            Toggle(isOn: $settings.autoCompactEnabled) {
+                Text("Auto-compact context")
+                Text("Runs /compact automatically when context reaches 80%")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -118,7 +130,7 @@ class SettingsWindowController {
         let hostingView = NSHostingView(rootView: content)
 
         let win = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 450, height: 240),
+            contentRect: NSRect(x: 0, y: 0, width: 450, height: 280),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
